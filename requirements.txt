@@ -1,4 +1,5 @@
 streamlit
 yt-dlp
 whisper
-
+ffmpeg-python
+imageio-ffmpeg
