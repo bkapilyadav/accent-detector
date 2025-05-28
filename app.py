@@ -2,7 +2,7 @@ import streamlit as st
 import yt_dlp
 import tempfile
 import whisper
-import imageio_ffmpeg as iio_ffmpeg
+import imageio_ffmpeg
 import os
 
 st.title("🎤 Accent Detector - YouTube Audio Transcription")
@@ -11,7 +11,10 @@ youtube_url = st.text_input("Enter YouTube Video URL")
 
 def download_audio(youtube_url):
     temp_audio_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-    ffmpeg_path = iio_ffmpeg.get_ffmpeg_exe()
+    
+    # Get ffmpeg and ffprobe paths using imageio_ffmpeg
+    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    ffprobe_path = ffmpeg_path.replace('ffmpeg', 'ffprobe')
 
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -23,13 +26,19 @@ def download_audio(youtube_url):
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }],
-        # Explicitly set ffmpeg location for postprocessor:
-        'postprocessor_args': ['-hide_banner', '-loglevel', 'error'],
+        # Explicit ffmpeg and ffprobe paths
         'ffmpeg_location': os.path.dirname(ffmpeg_path),
+        'postprocessor_args': ['-hide_banner', '-loglevel', 'error'],
+        'exec_cmd': f'"{ffmpeg_path}"',
     }
+
+    # Set environment variables so yt_dlp finds ffmpeg and ffprobe
+    os.environ['FFMPEG_BINARY'] = ffmpeg_path
+    os.environ['FFPROBE_BINARY'] = ffprobe_path
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([youtube_url])
+
     return temp_audio_file.name
 
 def transcribe_audio(audio_path):
