@@ -1,33 +1,24 @@
 import streamlit as st
-import os
-import tempfile
 import yt_dlp
-from moviepy.editor import AudioFileClip
+import tempfile
+import subprocess
 import whisper
 
-# Load Whisper model once
-@st.cache_resource
-def load_model():
-    return whisper.load_model("base")
+# Load Whisper model once (this may take a while on first run)
+model = whisper.load_model("base")
 
-model = load_model()
+st.title("Accent Detector - YouTube Audio Transcription")
 
-st.title("🎙️ Accent Detector from YouTube Audio")
-
-# Get OpenAI API key from environment variable set in Streamlit Secrets
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    st.warning("⚠️ Please add your OPENAI_API_KEY in Streamlit Secrets to use this app.")
-
-# Input: YouTube URL
-youtube_url = st.text_input("Enter YouTube Video URL:")
+youtube_url = st.text_input("Enter YouTube Video URL")
 
 def download_audio(youtube_url):
-    # Download audio to a temp file using yt-dlp
+    # Temporary file for mp3
+    audio_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+    
     ydl_opts = {
         'format': 'bestaudio/best',
+        'outtmpl': audio_file.name,
         'quiet': True,
-        'outtmpl': 'audio.%(ext)s',
         'noplaylist': True,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
@@ -35,49 +26,36 @@ def download_audio(youtube_url):
             'preferredquality': '192',
         }],
     }
+    
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info_dict = ydl.extract_info(youtube_url, download=False)
-        # Filename for audio
-        audio_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-        ydl_opts['outtmpl'] = audio_file.name
         ydl.download([youtube_url])
-        return audio_file.name
+
+    # Temporary file for wav output
+    wav_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    
+    # Convert mp3 to wav using ffmpeg command-line (ffmpeg must be available)
+    subprocess.run([
+        "ffmpeg", "-y", "-i", audio_file.name, wav_file.name
+    ], check=True)
+
+    return wav_file.name
 
 if st.button("Detect Accent"):
     if not youtube_url:
         st.error("Please enter a valid YouTube URL!")
     else:
-        with st.spinner("Downloading and processing audio..."):
-            try:
-                audio_path = download_audio(youtube_url)
-            except Exception as e:
-                st.error(f"Failed to download audio: {e}")
-                st.stop()
+        try:
+            with st.spinner("Downloading and converting audio..."):
+                wav_path = download_audio(youtube_url)
             
-            try:
-                # Load audio with moviepy to convert or check format
-                audio_clip = AudioFileClip(audio_path)
-                # Whisper requires WAV or other audio, convert if necessary
-                wav_path = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
-                audio_clip.write_audiofile(wav_path, logger=None)
-                audio_clip.close()
-
-                # Transcribe with Whisper
+            with st.spinner("Transcribing audio with Whisper..."):
                 result = model.transcribe(wav_path)
-
-                text = result.get("text", "")
-                st.subheader("🎧 Transcribed Text:")
-                st.write(text)
-
-                # For accent detection - placeholder logic (expand with your own model/logic)
-                # Example: Just print language detected
-                lang = result.get("language", "unknown")
-                st.subheader("🌍 Detected Language:")
-                st.write(lang)
-
-                # You can integrate your custom accent detection here
-                st.info("Accent detection logic to be implemented here.")
-
-            except Exception as e:
-                st.error(f"Error processing audio: {e}")
-
+            
+            st.subheader("Transcription:")
+            st.write(result["text"])
+            
+            st.subheader("Detected Language:")
+            st.write(result["language"])
+        
+        except Exception as e:
+            st.error(f"Error: {e}")
