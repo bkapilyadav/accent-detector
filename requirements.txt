@@ -1,5 +1,5 @@
 streamlit
 yt-dlp
 moviepy
-whisper-openai
+whisper
 
