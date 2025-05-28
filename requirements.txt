@@ -1,7 +1,4 @@
 streamlit
 yt-dlp
-whisper
+openai-whisper
 imageio-ffmpeg
-numpy
-tqdm
-decorator
