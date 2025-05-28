@@ -3,117 +3,148 @@ import yt_dlp
 import tempfile
 import whisper
 import os
-import shutil
+
+st.set_page_config(page_title="Accent Detector", page_icon="🎤")
 
 st.title("🎤 Accent Detector - YouTube Audio Transcription")
 
-# Check if ffmpeg is available
-def check_ffmpeg():
-    return shutil.which('ffmpeg') is not None and shutil.which('ffprobe') is not None
+youtube_url = st.text_input("Enter YouTube Video URL", placeholder="https://www.youtube.com/watch?v=...")
 
-youtube_url = st.text_input("Enter YouTube Video URL")
+@st.cache_resource
+def load_whisper_model():
+    """Load Whisper model with caching"""
+    return whisper.load_model("base")
 
 def download_audio(youtube_url):
     """Download audio from YouTube video"""
-    temp_audio_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    # Create temporary file
+    temp_dir = tempfile.mkdtemp()
+    temp_file = os.path.join(temp_dir, "audio")
     
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': temp_audio_file.name.replace('.wav', '.%(ext)s'),
+        'outtmpl': temp_file + '.%(ext)s',
         'quiet': True,
-        'noplaylist': True,
+        'no_warnings': True,
+        'extractaudio': True,
+        'audioformat': 'wav',
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'wav',
-            'preferredquality': '192',
         }],
     }
     
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([youtube_url])
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(youtube_url, download=False)
+        title = info.get('title', 'Unknown')
+        duration = info.get('duration', 0)
         
-        # Find the downloaded file
-        base_name = temp_audio_file.name.replace('.wav', '')
-        for ext in ['.wav', '.webm', '.m4a', '.mp3']:
-            potential_file = base_name + ext
-            if os.path.exists(potential_file):
-                return potential_file
+        # Check if video is too long (over 20 minutes)
+        if duration and duration > 1200:
+            raise Exception(f"Video is too long ({duration//60} minutes). Please use videos under 20 minutes.")
         
-        return temp_audio_file.name
-        
-    except Exception as e:
-        st.error(f"Download failed: {str(e)}")
-        raise e
+        # Download the audio
+        ydl.download([youtube_url])
+    
+    # Find the downloaded file
+    for file in os.listdir(temp_dir):
+        if file.startswith("audio"):
+            return os.path.join(temp_dir, file), title
+    
+    raise Exception("Failed to download audio file")
 
 def transcribe_audio(audio_path):
     """Transcribe audio using Whisper"""
-    try:
-        model = whisper.load_model("base")
-        result = model.transcribe(audio_path)
-        return result
-    except Exception as e:
-        st.error(f"Transcription failed: {str(e)}")
-        raise e
+    model = load_whisper_model()
+    result = model.transcribe(audio_path)
+    return result
 
-# Main app logic
-if st.button("Detect Accent"):
-    if not youtube_url:
-        st.error("Please enter a valid YouTube URL!")
-    elif not check_ffmpeg():
-        st.error("FFmpeg is not installed on this system. Please check the deployment configuration.")
-        st.info("Make sure 'packages.txt' file contains 'ffmpeg' in your repository.")
-    else:
+# Main interface
+if youtube_url:
+    if st.button("🎯 Detect Accent", type="primary"):
         try:
-            with st.spinner("Downloading audio from YouTube..."):
-                audio_path = download_audio(youtube_url)
+            # Validate URL
+            if not any(domain in youtube_url.lower() for domain in ['youtube.com', 'youtu.be']):
+                st.error("Please enter a valid YouTube URL")
+                st.stop()
             
-            with st.spinner("Transcribing audio (this may take a few minutes)..."):
-                transcription = transcribe_audio(audio_path)
+            # Download audio
+            with st.spinner("📥 Downloading audio from YouTube..."):
+                audio_path, title = download_audio(youtube_url)
+                st.success(f"✅ Downloaded: {title}")
+            
+            # Transcribe
+            with st.spinner("🎤 Transcribing audio (this may take a few minutes)..."):
+                result = transcribe_audio(audio_path)
             
             # Display results
-            st.success("Transcription completed!")
+            st.success("🎉 Transcription completed!")
             
-            st.subheader("📝 Transcription:")
-            st.write(transcription['text'])
+            col1, col2 = st.columns(2)
             
-            st.subheader("🌍 Detected Language:")
-            st.write(f"**{transcription['language'].upper()}**")
+            with col1:
+                st.subheader("🌍 Detected Language")
+                st.markdown(f"**{result['language'].upper()}**")
             
-            # Additional info if available
-            if 'segments' in transcription and len(transcription['segments']) > 0:
-                st.subheader("📊 Additional Information:")
-                total_duration = transcription['segments'][-1]['end']
-                st.write(f"**Duration:** {total_duration:.2f} seconds")
-                st.write(f"**Segments:** {len(transcription['segments'])}")
+            with col2:
+                st.subheader("📊 Confidence")
+                # Calculate average confidence from segments if available
+                if 'segments' in result:
+                    avg_confidence = sum(seg.get('avg_logprob', 0) for seg in result['segments']) / len(result['segments'])
+                    confidence_percent = max(0, min(100, (avg_confidence + 1) * 100))
+                    st.markdown(f"**{confidence_percent:.1f}%**")
             
-            # Clean up temporary files
+            st.subheader("📝 Full Transcription")
+            st.text_area("Transcribed Text", result['text'], height=200)
+            
+            # Clean up
             try:
-                if os.path.exists(audio_path):
-                    os.unlink(audio_path)
+                os.remove(audio_path)
+                os.rmdir(os.path.dirname(audio_path))
             except:
                 pass
                 
         except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
-            st.info("Please try with a different YouTube URL or check if the video is accessible.")
+            st.error(f"❌ Error: {str(e)}")
+            
+            if "ffmpeg" in str(e).lower():
+                st.info("💡 FFmpeg is required but not available. Please check deployment configuration.")
+            elif "private" in str(e).lower() or "unavailable" in str(e).lower():
+                st.info("💡 This video might be private or unavailable. Try a different video.")
+            else:
+                st.info("💡 Please try with a different YouTube video URL.")
 
-# Add some helpful information
-with st.expander("ℹ️ How to use"):
-    st.write("""
-    1. **Paste a YouTube URL** in the input field above
-    2. **Click 'Detect Accent'** to start the process
-    3. **Wait for processing** - this may take a few minutes depending on video length
-    4. **View results** - you'll see the transcription and detected language
+else:
+    st.info("👆 Enter a YouTube URL above to get started")
+
+# Sidebar with instructions
+with st.sidebar:
+    st.header("📖 Instructions")
+    st.markdown("""
+    1. **Paste YouTube URL** in the input field
+    2. **Click 'Detect Accent'** to start
+    3. **Wait for processing** (1-5 minutes)
+    4. **View results** below
     
-    **Note:** This app works best with videos that have clear speech. Very long videos may take more time to process.
+    **Tips:**
+    - Use videos with clear speech
+    - Shorter videos process faster
+    - Works best with videos under 20 minutes
     """)
-
-with st.expander("🔧 Troubleshooting"):
-    st.write("""
-    If you encounter errors:
-    - Make sure the YouTube URL is valid and publicly accessible
-    - Try with shorter videos (under 10 minutes) for faster processing
-    - Some videos may be restricted and cannot be downloaded
-    - If ffmpeg errors persist, the deployment may need configuration updates
+    
+    st.header("⚠️ Limitations")
+    st.markdown("""
+    - Only public YouTube videos
+    - Audio quality affects accuracy
+    - Processing time varies by length
+    - Some accents may not be detected accurately
+    """)
+    
+    st.header("🛠️ Troubleshooting")
+    st.markdown("""
+    **Common issues:**
+    - Private videos: Use public videos only
+    - Long videos: Try shorter clips
+    - Poor audio: Use videos with clear speech
+    - Network issues: Check internet connection
     """)
