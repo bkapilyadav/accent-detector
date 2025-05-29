@@ -1,11 +1,17 @@
-streamlit
+streamlit>=1.28.0
+openai-whisper
 yt-dlp
+librosa
+numpy
+torch --index-url https://download.pytorch.org/whl/cpu
+torchaudio --index-url https://download.pytorch.org/whl/cpu
+transformers
 pydub
 SpeechRecognition
 requests
-numpy
-openai-whisper
-librosa
-torch
-torchaudio
-transformers
+scipy
+scikit-learn
+soundfile
+ffmpeg-python
+matplotlib
+pandas
