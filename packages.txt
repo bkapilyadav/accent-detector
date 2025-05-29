@@ -1,5 +1,1 @@
-# Minimal system packages for Streamlit Cloud
-# Many audio packages are not available on Streamlit Cloud
-
 ffmpeg
-libsndfile1
