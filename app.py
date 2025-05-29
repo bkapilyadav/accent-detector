@@ -1,76 +1,76 @@
 import streamlit as st
 import os
 import yt_dlp
-import openai
 from tempfile import NamedTemporaryFile
+import openai
+import re
 
-# Set OpenAI API key
-openai.api_key = os.getenv("OPENAI_API_KEY") or st.secrets["OPENAI_API_KEY"]
+# Set your OpenAI API key (will be loaded at runtime on Streamlit Cloud)
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-st.title("🎤 English Accent Detector")
-st.write("Enter a **public video URL** (MP4, Loom, YouTube) to analyze the speaker's English accent.")
+# Title
+st.title("🎙️ Accent Detection Tool")
+st.write("Upload a video/audio URL (e.g. MP4, Loom, direct link) to detect English accents and estimate confidence.")
 
-video_url = st.text_input("Video URL")
+# Input URL
+video_url = st.text_input("🔗 Enter public video/audio URL:")
 
+# Helper to download audio
 def download_audio(url):
     try:
         with NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
             ydl_opts = {
-                'format': 'bestaudio/best',
+                'format': 'bestaudio[ext=m4a]/bestaudio/best',
                 'outtmpl': tmp_file.name,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
                     'preferredquality': '192',
                 }],
+                'quiet': True,
+                'no_warnings': True,
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
             return tmp_file.name, None
     except Exception as e:
-        return None, str(e)
+        return None, f"Download error: {e}"
 
-def transcribe_audio_whisper(audio_path):
-    with open(audio_path, "rb") as audio_file:
-        transcript = openai.Audio.transcribe("whisper-1", audio_file)
+# Transcription
+def transcribe_audio(audio_path):
+    with open(audio_path, "rb") as f:
+        transcript = openai.Audio.transcribe("whisper-1", f)
     return transcript["text"]
 
-def classify_accent_gpt(transcript):
-    prompt = f"""
-You are an accent detection AI. Given this transcript of spoken English, determine:
-1. The likely English accent (British, American, Australian, etc.).
-2. Confidence score (0-100%).
-3. A short explanation of your reasoning.
-
-Transcript:
-{transcript}
-
-Respond in this format:
-Accent: <detected accent>
-Confidence: <confidence score>%
-Explanation: <short explanation>
-"""
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response['choices'][0]['message']['content']
-
-if st.button("Analyze"):
-    if not video_url:
-        st.warning("Please enter a video URL.")
+# Accent Classification (very simple placeholder)
+def classify_accent(transcription):
+    transcription = transcription.lower()
+    # Placeholder logic
+    if re.search(r"\bmate\b|\bg'day\b|\baussie\b", transcription):
+        return "Australian", 90
+    elif re.search(r"\blorry\b|\bqueue\b|\bflat\b", transcription):
+        return "British", 85
+    elif re.search(r"\bcolor\b|\btruck\b|\bsidewalk\b", transcription):
+        return "American", 88
     else:
-        with st.spinner("Downloading audio..."):
-            audio_path, error = download_audio(video_url)
-            if error:
-                st.error(f"Download error: {error}")
-            else:
-                st.audio(audio_path, format="audio/mp3")
-                with st.spinner("Transcribing audio..."):
-                    transcript = transcribe_audio_whisper(audio_path)
-                st.subheader("📜 Transcript")
-                st.write(transcript)
-                with st.spinner("Classifying accent..."):
-                    result = classify_accent_gpt(transcript)
-                st.subheader("🌍 Detected Accent")
-                st.markdown(result)
+        return "Unknown English Accent", 60
+
+if st.button("Analyze Accent") and video_url:
+    with st.spinner("Downloading and analyzing..."):
+        audio_path, error = download_audio(video_url)
+        if error:
+            st.error(error)
+        else:
+            st.audio(audio_path)  # Playback
+            transcript = transcribe_audio(audio_path)
+            st.subheader("Transcription:")
+            st.write(transcript)
+
+            accent, confidence = classify_accent(transcript)
+            st.subheader("Accent Classification:")
+            st.write(f"🎤 Accent Detected: **{accent}**")
+            st.write(f"🔍 Confidence: **{confidence}%**")
+            st.write("This is a prototype tool using Whisper transcription and basic keyword detection.")
+
+            # Cleanup
+            os.remove(audio_path)
