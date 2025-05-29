@@ -1,10 +1,10 @@
 import streamlit as st
-import tempfile
 import os
 import yt_dlp
 import openai
+from tempfile import NamedTemporaryFile
 
-# Get OpenAI API key from Streamlit Secrets or Environment
+# Set OpenAI API key
 openai.api_key = os.getenv("OPENAI_API_KEY") or st.secrets["OPENAI_API_KEY"]
 
 st.title("🎤 English Accent Detector")
@@ -13,21 +13,20 @@ st.write("Enter a **public video URL** (MP4, Loom, YouTube) to analyze the speak
 video_url = st.text_input("Video URL")
 
 def download_audio(url):
-    temp_dir = tempfile.mkdtemp()
-    audio_path = os.path.join(temp_dir, "audio.mp3")
     try:
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': audio_path,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        return audio_path, None
+        with NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': tmp_file.name,
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+            return tmp_file.name, None
     except Exception as e:
         return None, str(e)
 
@@ -66,7 +65,7 @@ if st.button("Analyze"):
             if error:
                 st.error(f"Download error: {error}")
             else:
-                st.audio(audio_path)
+                st.audio(audio_path, format="audio/mp3")
                 with st.spinner("Transcribing audio..."):
                     transcript = transcribe_audio_whisper(audio_path)
                 st.subheader("📜 Transcript")
