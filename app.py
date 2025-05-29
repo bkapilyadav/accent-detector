@@ -4,6 +4,8 @@ import re
 import json
 import tempfile
 import os
+import yt_dlp
+import requests
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
@@ -337,7 +339,114 @@ def enhanced_accent_detection(text: str, language_code: str) -> Dict:
     
     return results
 
-def transcribe_with_openai(audio_file) -> Dict:
+def download_youtube_audio(url: str, max_duration: int = 600) -> str:
+    """Download audio from YouTube video"""
+    
+    # Configure yt-dlp options
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': '%(title)s.%(ext)s',
+        'extractaudio': True,
+        'audioformat': 'wav',
+        'audioquality': '192K',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'wav',
+            'preferredquality': '192',
+        }],
+        'quiet': True,
+        'no_warnings': True,
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Get video info first
+            info = ydl.extract_info(url, download=False)
+            duration = info.get('duration', 0)
+            title = info.get('title', 'Unknown')
+            
+            # Check duration limit
+            if duration > max_duration:
+                raise Exception(f"Video too long ({duration}s). Maximum allowed: {max_duration}s")
+            
+            # Create temporary directory
+            temp_dir = tempfile.mkdtemp()
+            ydl_opts['outtmpl'] = os.path.join(temp_dir, '%(title)s.%(ext)s')
+            
+            # Download the video
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl_download:
+                ydl_download.download([url])
+            
+            # Find the downloaded audio file
+            audio_files = [f for f in os.listdir(temp_dir) if f.endswith('.wav')]
+            if not audio_files:
+                raise Exception("Failed to download audio file")
+            
+            audio_path = os.path.join(temp_dir, audio_files[0])
+            
+            return {
+                'audio_path': audio_path,
+                'title': title,
+                'duration': duration,
+                'temp_dir': temp_dir
+            }
+            
+    except Exception as e:
+        raise Exception(f"Failed to download YouTube audio: {str(e)}")
+
+def transcribe_youtube_video(url: str, start_time: int = 0, duration: int = 60) -> Dict:
+    """Download and transcribe YouTube video"""
+    
+    if not OPENAI_API_KEY:
+        raise Exception("OpenAI API key required for transcription")
+    
+    try:
+        # Download audio
+        with st.spinner("Downloading YouTube audio..."):
+            download_result = download_youtube_audio(url)
+        
+        # Transcribe with OpenAI Whisper
+        with st.spinner("Transcribing audio..."):
+            client = openai.OpenAI(api_key=OPENAI_API_KEY)
+            
+            with open(download_result['audio_path'], "rb") as audio_file:
+                transcript = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    response_format="verbose_json",
+                    language=None,
+                    temperature=0
+                )
+        
+        # Clean up temporary files
+        try:
+            os.remove(download_result['audio_path'])
+            os.rmdir(download_result['temp_dir'])
+        except:
+            pass  # Ignore cleanup errors
+        
+        return {
+            "text": transcript.text,
+            "language": getattr(transcript, 'language', 'unknown'),
+            "confidence": 0.9,
+            "duration": download_result['duration'],
+            "title": download_result['title'],
+            "url": url,
+            "method": "youtube_whisper"
+        }
+        
+    except Exception as e:
+        raise Exception(f"YouTube transcription failed: {str(e)}")
+
+def is_valid_youtube_url(url: str) -> bool:
+    """Check if URL is a valid YouTube URL"""
+    youtube_patterns = [
+        r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=[\w-]+',
+        r'(?:https?://)?(?:www\.)?youtu\.be/[\w-]+',
+        r'(?:https?://)?(?:m\.)?youtube\.com/watch\?v=[\w-]+',
+    ]
+    
+    return any(re.match(pattern, url) for pattern in youtube_patterns)
     """Transcribe audio using OpenAI Whisper API"""
     
     if not OPENAI_API_KEY:
@@ -493,7 +602,7 @@ def main():
                 st.session_state.sample_text = text
     
     # Main content tabs
-    tab1, tab2 = st.tabs(["📝 Text Analysis", "🎙️ Audio Analysis"])
+    tab1, tab2, tab3 = st.tabs(["📝 Text Analysis", "🎙️ Audio Analysis", "📺 YouTube Analysis"])
     
     with tab1:
         st.header("Text-based Accent Detection")
@@ -564,6 +673,106 @@ def main():
                     
                     except Exception as e:
                         st.error(f"❌ Error processing audio: {str(e)}")
+
+    with tab3:
+        st.header("YouTube Video Accent Detection")
+        
+        if not OPENAI_API_KEY:
+            st.warning("⚠️ OpenAI API key required for YouTube video transcription. Please add it to your Streamlit secrets.")
+        else:
+            st.info("📺 Enter a YouTube URL to download, transcribe, and analyze the accent.")
+            
+            # YouTube URL input
+            youtube_url = st.text_input(
+                "YouTube URL:",
+                placeholder="https://www.youtube.com/watch?v=...",
+                help="Enter a YouTube video URL (max 10 minutes for processing efficiency)"
+            )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                max_duration = st.slider(
+                    "Max video duration (seconds):",
+                    min_value=30,
+                    max_value=600,
+                    value=300,
+                    step=30,
+                    help="Longer videos take more time and credits to process"
+                )
+            
+            with col2:
+                st.write("")  # Spacing
+                st.write("")  # Spacing
+                process_youtube = st.button("📺 Process YouTube Video", type="primary")
+            
+            if process_youtube:
+                if not youtube_url:
+                    st.error("❌ Please enter a YouTube URL")
+                elif not is_valid_youtube_url(youtube_url):
+                    st.error("❌ Please enter a valid YouTube URL")
+                else:
+                    try:
+                        # Process YouTube video
+                        with st.spinner("Processing YouTube video..."):
+                            transcription_result = transcribe_youtube_video(youtube_url)
+                        
+                        st.success("✅ YouTube video processed successfully!")
+                        
+                        # Display video info
+                        st.subheader("📺 Video Information")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"**Title:** {transcription_result.get('title', 'Unknown')}")
+                            st.write(f"**Duration:** {transcription_result.get('duration', 0)} seconds")
+                        with col2:
+                            st.write(f"**Detected Language:** {transcription_result.get('language', 'Unknown')}")
+                            st.write(f"**URL:** [Link]({youtube_url})")
+                        
+                        # Display transcription
+                        st.subheader("📝 Transcription")
+                        transcription_text = transcription_result.get('text', '')
+                        
+                        if len(transcription_text) > 500:
+                            with st.expander("Show full transcription", expanded=False):
+                                st.write(transcription_text)
+                            st.write(f"**Preview:** {transcription_text[:500]}...")
+                        else:
+                            st.write(transcription_text)
+                        
+                        # Analyze accent from transcription
+                        if transcription_text:
+                            with st.spinner("Analyzing accent from YouTube video..."):
+                                accent_results = enhanced_accent_detection(
+                                    transcription_text, 
+                                    transcription_result.get('language', language_code)
+                                )
+                                display_accent_results(accent_results)
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error processing YouTube video: {str(e)}")
+                        
+                        # Common error suggestions
+                        error_msg = str(e).lower()
+                        if "private" in error_msg or "unavailable" in error_msg:
+                            st.info("💡 Try a different public YouTube video")
+                        elif "long" in error_msg:
+                            st.info("💡 Try a shorter video or increase the duration limit")
+                        elif "download" in error_msg:
+                            st.info("💡 Check your internet connection and try again")
+            
+            # Example YouTube videos
+            st.subheader("🎬 Example Videos")
+            st.write("Try these example videos to test the accent detection:")
+            
+            example_videos = {
+                "American English": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",  # Replace with actual examples
+                "British English": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "Australian English": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            }
+            
+            for accent, url in example_videos.items():
+                if st.button(f"Use {accent} example", key=f"yt_sample_{accent}"):
+                    st.session_state.youtube_url = url
 
     # Footer
     st.divider()
