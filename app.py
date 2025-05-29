@@ -2,9 +2,47 @@ import openai
 import streamlit as st
 import re
 import json
+import tempfile
+import os
 from typing import Dict, List, Optional, Tuple
+from datetime import datetime
 
-# Add to your configuration section
+# Configure Streamlit page
+st.set_page_config(
+    page_title="Accent Detection App",
+    page_icon="🎭",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Add custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        text-align: center;
+        padding: 2rem 0;
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+    }
+    .metric-card {
+        background: #f8f9fa;
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid #667eea;
+    }
+    .feature-found {
+        background: #e8f5e8;
+        padding: 0.2rem 0.5rem;
+        border-radius: 4px;
+        margin: 0.1rem;
+        display: inline-block;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Get API key from secrets
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "")
 
 def detect_accent_patterns(text: str, language_code: str) -> Dict:
@@ -247,7 +285,7 @@ def enhanced_accent_detection(text: str, language_code: str) -> Dict:
     """Enhanced accent detection using multiple methods"""
     
     results = {
-        'timestamp': st.session_state.get('current_time', 'unknown'),
+        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         'text_analyzed': text[:100] + "..." if len(text) > 100 else text,
         'language_code': language_code
     }
@@ -299,8 +337,8 @@ def enhanced_accent_detection(text: str, language_code: str) -> Dict:
     
     return results
 
-def transcribe_with_openai(audio_file_path: str) -> Dict:
-    """Alternative transcription using OpenAI Whisper API"""
+def transcribe_with_openai(audio_file) -> Dict:
+    """Transcribe audio using OpenAI Whisper API"""
     
     if not OPENAI_API_KEY:
         raise Exception("OpenAI API key required for Whisper transcription")
@@ -308,26 +346,35 @@ def transcribe_with_openai(audio_file_path: str) -> Dict:
     client = openai.OpenAI(api_key=OPENAI_API_KEY)
     
     try:
-        with open(audio_file_path, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                response_format="verbose_json",  # Get more detailed response
-                language=None,  # Auto-detect language
-                temperature=0  # More deterministic results
-            )
+        # Create a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+            tmp_file.write(audio_file.read())
+            tmp_file_path = tmp_file.name
         
-        # Extract language information
-        detected_language = getattr(transcript, 'language', 'unknown')
-        
-        return {
-            "text": transcript.text,
-            "language": detected_language,
-            "confidence": 0.9,  # Whisper doesn't provide confidence scores
-            "duration": getattr(transcript, 'duration', 0),
-            "segments": getattr(transcript, 'segments', []),
-            "method": "openai_whisper"
-        }
+        try:
+            with open(tmp_file_path, "rb") as audio_file_obj:
+                transcript = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file_obj,
+                    response_format="verbose_json",  # Get more detailed response
+                    language=None,  # Auto-detect language
+                    temperature=0  # More deterministic results
+                )
+            
+            # Extract language information
+            detected_language = getattr(transcript, 'language', 'unknown')
+            
+            return {
+                "text": transcript.text,
+                "language": detected_language,
+                "confidence": 0.9,  # Whisper doesn't provide confidence scores
+                "duration": getattr(transcript, 'duration', 0),
+                "segments": getattr(transcript, 'segments', []),
+                "method": "openai_whisper"
+            }
+        finally:
+            # Clean up temporary file
+            os.unlink(tmp_file_path)
         
     except Exception as e:
         raise Exception(f"OpenAI Whisper transcription failed: {str(e)}")
@@ -348,6 +395,9 @@ def display_accent_results(results: Dict):
     with col3:
         st.metric("Reliability", final.get('reliability', 'Unknown'))
     
+    # Text analysis info
+    st.info(f"📝 Analyzed {final.get('text_length_words', 0)} words at {results.get('timestamp', 'unknown time')}")
+    
     # Detailed breakdown
     with st.expander("📊 Detailed Analysis", expanded=False):
         
@@ -358,7 +408,9 @@ def display_accent_results(results: Dict):
             if rb['detected_accent'] != 'Unknown':
                 st.write(f"- Detected: {rb['detected_accent']} ({rb['confidence']}%)")
                 if rb['features_found']:
-                    st.write(f"- Key features: {', '.join(rb['features_found'])}")
+                    st.write("- Key features found:")
+                    for feature in rb['features_found']:
+                        st.markdown(f"  <span class='feature-found'>{feature}</span>", unsafe_allow_html=True)
             else:
                 st.write("- No clear patterns detected")
         
@@ -375,6 +427,9 @@ def display_accent_results(results: Dict):
                 st.write("- Alternatives:")
                 for alt in ai['alternative_accents'][:3]:  # Show top 3
                     st.write(f"  - {alt.get('accent', 'Unknown')} ({alt.get('probability', 0)}%)")
+            
+            if ai.get('reasoning'):
+                st.write(f"- Reasoning: {ai['reasoning']}")
         
         # Phonetic analysis
         if 'phonetic' in results and results['phonetic']['phonetic_patterns']:
@@ -382,51 +437,142 @@ def display_accent_results(results: Dict):
             for pattern, count in results['phonetic']['phonetic_patterns'].items():
                 st.write(f"- {pattern.replace('_', ' ').title()}: {count} occurrences")
 
-# Example usage function
-def demo_accent_detection():
-    """Demo function showing how to use the accent detection"""
+def main():
+    """Main Streamlit application"""
     
-    st.title("🎭 Accent Detection Demo")
+    # Header
+    st.markdown("""
+    <div class="main-header">
+        <h1>🎭 Accent Detection App</h1>
+        <p>Analyze accents and dialects from text or speech using AI</p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    # Text input
-    sample_texts = {
-        "American English": "I'm gonna grab some coffee and candy from the elevator, then head to my apartment.",
-        "British English": "I'll pop to the lift and get some sweets, then head back to my flat, cheers mate!",
-        "Australian English": "G'day mate! Let's have a barbie this arvo, it'll be bonzer!",
-        "Canadian English": "It's aboot time we head to the washroom, eh? Don't forget your toque!",
-    }
-    
-    selected_sample = st.selectbox("Choose a sample text:", list(sample_texts.keys()))
-    
-    text_input = st.text_area(
-        "Enter text to analyze:",
-        value=sample_texts[selected_sample],
-        height=100
-    )
-    
-    language_code = st.selectbox(
-        "Language:",
-        ["en-US", "en-GB", "en-AU", "es-ES", "fr-FR"],
-        index=0
-    )
-    
-    if st.button("🔍 Analyze Accent"):
-        if text_input.strip():
-            with st.spinner("Analyzing accent..."):
-                results = enhanced_accent_detection(text_input, language_code)
-                display_accent_results(results)
+    # Sidebar configuration
+    with st.sidebar:
+        st.header("⚙️ Configuration")
+        
+        # API Key status
+        if OPENAI_API_KEY:
+            st.success("✅ OpenAI API Key configured")
         else:
-            st.warning("Please enter some text to analyze.")
+            st.error("❌ OpenAI API Key missing")
+            st.info("Add your OpenAI API key to Streamlit secrets to enable AI analysis and audio transcription.")
+        
+        # Language selection
+        language_options = {
+            "English": "en-US",
+            "Spanish": "es-ES", 
+            "French": "fr-FR",
+            "German": "de-DE",
+            "Italian": "it-IT",
+            "Portuguese": "pt-PT"
+        }
+        
+        selected_language = st.selectbox(
+            "Select Language:",
+            list(language_options.keys())
+        )
+        language_code = language_options[selected_language]
+        
+        st.divider()
+        
+        # Sample texts
+        st.subheader("📝 Sample Texts")
+        sample_texts = {
+            "American English": "I'm gonna grab some coffee and candy from the elevator, then head to my apartment. Y'all want anything?",
+            "British English": "I'll pop to the lift and get some sweets, then head back to my flat. Cheers mate, brilliant!",
+            "Australian English": "G'day mate! Let's have a barbie this arvo down at the servo, it'll be bonzer! No worries!",
+            "Canadian English": "It's aboot time we head to the washroom, eh? Don't forget your toque, it's cold out there!",
+            "Mexican Spanish": "¡Órale güey! Vamos a echar la chela, está muy chido el ambiente aquí, ¿no?",
+            "French (France)": "Salut ! On va prendre un café au bistrot, c'est chouette cette ambiance, non ?",
+        }
+        
+        for accent, text in sample_texts.items():
+            if st.button(f"Use {accent} sample", key=f"sample_{accent}"):
+                st.session_state.sample_text = text
+    
+    # Main content tabs
+    tab1, tab2 = st.tabs(["📝 Text Analysis", "🎙️ Audio Analysis"])
+    
+    with tab1:
+        st.header("Text-based Accent Detection")
+        
+        # Text input
+        text_input = st.text_area(
+            "Enter text to analyze:",
+            value=st.session_state.get('sample_text', ''),
+            height=150,
+            placeholder="Type or paste text here..."
+        )
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            analyze_button = st.button("🔍 Analyze Accent", type="primary", use_container_width=True)
+        with col2:
+            clear_button = st.button("🗑️ Clear", use_container_width=True)
+        
+        if clear_button:
+            st.session_state.sample_text = ""
+            st.rerun()
+        
+        if analyze_button:
+            if text_input.strip():
+                with st.spinner("Analyzing accent..."):
+                    results = enhanced_accent_detection(text_input, language_code)
+                    display_accent_results(results)
+            else:
+                st.warning("⚠️ Please enter some text to analyze.")
+    
+    with tab2:
+        st.header("Audio-based Accent Detection")
+        
+        if not OPENAI_API_KEY:
+            st.warning("⚠️ OpenAI API key required for audio transcription. Please add it to your Streamlit secrets.")
+        else:
+            st.info("🎤 Upload an audio file to transcribe and analyze the accent.")
+            
+            uploaded_file = st.file_uploader(
+                "Choose an audio file",
+                type=['wav', 'mp3', 'm4a', 'ogg', 'flac'],
+                help="Supported formats: WAV, MP3, M4A, OGG, FLAC"
+            )
+            
+            if uploaded_file is not None:
+                st.audio(uploaded_file, format='audio/wav')
+                
+                if st.button("🎙️ Transcribe & Analyze", type="primary"):
+                    try:
+                        with st.spinner("Transcribing audio..."):
+                            transcription_result = transcribe_with_openai(uploaded_file)
+                        
+                        st.success("✅ Transcription completed!")
+                        
+                        # Display transcription
+                        st.subheader("📝 Transcription")
+                        st.write(f"**Detected Language:** {transcription_result.get('language', 'Unknown')}")
+                        st.write(f"**Text:** {transcription_result.get('text', '')}")
+                        
+                        # Analyze accent from transcription
+                        if transcription_result.get('text'):
+                            with st.spinner("Analyzing accent from transcription..."):
+                                accent_results = enhanced_accent_detection(
+                                    transcription_result['text'], 
+                                    transcription_result.get('language', language_code)
+                                )
+                                display_accent_results(accent_results)
+                    
+                    except Exception as e:
+                        st.error(f"❌ Error processing audio: {str(e)}")
 
-# Requirements and configuration notes
-"""
-Modified requirements.txt:
-streamlit
-yt-dlp
-requests
-openai>=1.0.0
+    # Footer
+    st.divider()
+    st.markdown("""
+    <div style="text-align: center; color: #666; padding: 1rem;">
+        <p>🎭 Accent Detection App | Powered by OpenAI GPT-4 & Whisper</p>
+        <p><small>Analyzes linguistic patterns, vocabulary, and regional markers to identify accents and dialects</small></p>
+    </div>
+    """, unsafe_allow_html=True)
 
-Modified secrets.toml:
-OPENAI_API_KEY = "your-openai-api-key-here"
-ASSEMBLYAI_API_KEY = "your-assemblyai-key-here"
-"""
+if __name__ == "__main__":
+    main()
